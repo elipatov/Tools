@@ -1,2 +1,2 @@
 # Tools
-Various commonly used by me solutions
+Various solutions commonly used by me
