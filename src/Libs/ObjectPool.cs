@@ -1,4 +1,5 @@
-﻿using System.Runtime.CompilerServices;
+﻿using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace Libs
@@ -18,53 +19,54 @@ namespace Libs
          * _head consist of next parts:
          *     Index - 32-bit stack pointer.
          *     Tag   - 31-bit tag to avoid ABA problem.
-         *     L     - 1-bit flag representing exclusive write lock
+         *     L     - 1-bit flag represens exclusive write lock
          * _head binary representation:
          * Bytes |_7_|_6_|_5_|_4_|_3_|_2_|_1_|_0_|
          *       |L|     Tag     |     Index     |
          */
-        private const int   IndexBits = 32;
-        private const ulong IndexMask = 0xFFFF_FFFF; //Low 32-bits
-        private const ulong TagMask = 0x7FFF_FFFFUL << IndexBits; //High 32-bits excluding MST
-        private const ulong LockMask = ~(TagMask | IndexMask); //Most significant bit
-        private const ulong TagIncrement = 1UL << IndexBits; //Increment tag by one
+        private const int  IndexBits = 32; //Can be used to move border betwean tag and index.
+        private const long IndexMask = 0xFFFF_FFFFL; //Low 32-bits
+        private const long TagMask   = 0x7FFF_FFFFL << IndexBits; //High 32-bits excluding MST bit
+        private const long UnlockMask = TagMask | IndexMask; //Excluding MST bit
+        private const long LockMask = ~UnlockMask; //Most significant bit
+        private const long TagIncrement = 1L << IndexBits; //Increment tag by one
+        private const long MaxIndex = ~(-1L << IndexBits); //Set low IndexBits-bits to 1
 
         private long _head;
-        private readonly ulong _basketSize;
-        private readonly ulong _maxIndex;
+        private readonly long _basketSize;
+        private readonly long _maxIndex;
         private readonly T[][] _data;
 
-        public ObjectPool(int basketSize = 1000, int maxBasketsCount = 100_000)
+        public ObjectPool(long basketSize = 1000, long maxBasketsCount = 100_000)
         {
-            _basketSize = (ulong)basketSize;
-            _maxIndex = (ulong)(maxBasketsCount * basketSize - 1);
+            _basketSize = basketSize;
+            _maxIndex = maxBasketsCount * basketSize - 1;
+            if(MaxIndex < _maxIndex) throw new ArgumentException($"Maximum allowed total size (basketSize * maxBasketsCount) is {MaxIndex}.");
             _data = new T[maxBasketsCount][];
 
             //Fill first basket with new objects at startup.
             //It brings light performance boost due to data locality.
             //Under real load objects will be reordered. So, real impact can be negligible.
             //Leave 1/4 of basket free. It helps to avoid pool extension if there are allocations outsite of pool.
-            ulong preAllocateSize = (ulong) (_basketSize * 0.750);
+            long preAllocateSize = (long)(_basketSize * 0.750);
             _data[0] = InitBasket(preAllocateSize);
-            _head = GetNewHead(preAllocateSize - 1, 0, false);
+            _head = preAllocateSize - 1;
         }
 
         public T Rent()
         {
-            long head;
-            long newHead;
+            long head, newHead;
             T result;
 
             do
             {
                 head = Volatile.Read(ref _head);
-                ulong index = (ulong)head & IndexMask;
-                ulong tag = (ulong)head & TagMask;
+                long index = head & IndexMask;
                 if (index == 0) return new T(); //Slot with index 0 reserved as empty marker
 
                 var pos = Split(index);
                 result = Volatile.Read(ref _data[pos.i][pos.j]);
-                newHead = GetNewHead(--index, tag, false);
+                newHead = GetNewHead(head - 1, false);
             } while (Interlocked.CompareExchange(ref _head, newHead, head) != head);
 
             return result;
@@ -75,15 +77,14 @@ namespace Libs
             while (true)
             {
                 long head = Volatile.Read(ref _head);
-                bool isRunningPrePublish = ((ulong)head & LockMask) == LockMask;
+                bool isRunningPrePublish = (head & LockMask) == LockMask;
                 if (isRunningPrePublish) continue;
 
-                ulong index = (ulong)head & IndexMask;
-                ulong tag = (ulong)head & TagMask;
-                if (index == _maxIndex) return; //Pool is full. Just drain object.
+                long index = head & IndexMask;
+                if (index == _maxIndex) return; //Pool is full. Just drain an object.
 
                 //Begin transaction
-                long newHead = GetNewHead(index, tag, true);
+                long newHead = GetNewHead(head, true);
                 if (Interlocked.CompareExchange(ref _head, newHead, head) != head) continue;
                 head = newHead;
 
@@ -91,22 +92,22 @@ namespace Libs
                 EnsureRowInitialized(pos);
                 Volatile.Write(ref _data[pos.i][pos.j], entity);
 
-                //Commit transaction
-                newHead = GetNewHead(index, tag, false);
+                //Commit or rollback transaction
+                newHead = GetNewHead(head + 1, false);
                 if (Interlocked.CompareExchange(ref _head, newHead, head) == head) break;
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private long GetNewHead(ulong newIndex, ulong tag, bool prePublish)
+        private static long GetNewHead(long head, bool @lock)
         {
-            ulong head = ((tag + TagIncrement) & TagMask) | (newIndex & IndexMask);
-            if (prePublish) head |= LockMask;
-            return (long)head;
+            unchecked{head += TagIncrement;}
+            return @lock ? head | LockMask : head & UnlockMask;
         }
 
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void EnsureRowInitialized((ulong i, ulong j) pos)
+        private void EnsureRowInitialized((long i, long j) pos)
         {
             //Pool extension is uncommon operation. So, lock here does not significantly affect
             //performance but drastically simplified thread synchronization.
@@ -123,34 +124,33 @@ namespace Libs
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private T[] InitBasket(ulong preAllocateSize)
+        private T[] InitBasket(long preAllocateSize)
         {
             T[] basket = new T[_basketSize];
-            for (ulong i = 0; i < preAllocateSize; ++i)
+            for (long i = 0; i < preAllocateSize; ++i)
                 basket[i] = new T();
             return basket;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private (ulong i, ulong j) Split(ulong index)
+        private (long i, long j) Split(long index)
         {
-            ulong i = index / _basketSize;
-            ulong j = index % _basketSize;
+            long i = index / _basketSize;
+            long j = index % _basketSize;
             return (i, j);
         }
 
         #region Expose internals to tests
-        internal ulong Index
+        internal long Index
         {
             get
             {
                 long head = Volatile.Read(ref _head);
-                ulong index = (ulong)head & IndexMask;
-                return index;
+                return head & IndexMask;
             }
         }
 
-        internal T this[ulong index]
+        internal T this[long index]
         {
             get
             {
