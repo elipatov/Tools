@@ -33,13 +33,13 @@ namespace Libs
         private const long MaxIndex = ~(-1L << IndexBits); //Set low IndexBits-bits to 1
 
         private long _head;
-        private readonly long _basketSize;
+        private readonly ulong _basketSize;
         private readonly long _maxIndex;
         private readonly T[][] _data;
 
         public ObjectPool(long basketSize = 1000, long maxBasketsCount = 100_000)
         {
-            _basketSize = basketSize;
+            _basketSize = (ulong)basketSize;
             _maxIndex = maxBasketsCount * basketSize - 1;
             if(MaxIndex < _maxIndex) throw new ArgumentException($"Maximum allowed total size (basketSize * maxBasketsCount) is {MaxIndex}.");
             _data = new T[maxBasketsCount][];
@@ -123,7 +123,6 @@ namespace Libs
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private T[] InitBasket(long preAllocateSize)
         {
             T[] basket = new T[_basketSize];
@@ -135,9 +134,10 @@ namespace Libs
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private (long i, long j) Split(long index)
         {
-            long i = index / _basketSize;
-            long j = index % _basketSize;
-            return (i, j);
+            //For perfomance reason it is important to perfom divisions on uint operands
+            ulong i = (ulong)index / _basketSize;
+            ulong j = (ulong)index % _basketSize;
+            return ((long)i, (long)j);
         }
 
         #region Expose internals to tests
