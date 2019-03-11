@@ -4,11 +4,17 @@ using System.Threading;
 
 namespace Libs
 {
+    public interface IObjectPool<T> where T : class, new()
+    {
+        T Rent();
+        void Return(T entity);
+    }
+
     /// <summary>
     ///     Lightweight hight performance object pool.
     /// </summary>
     /// <typeparam name="T">Type of pooled object</typeparam>
-    public sealed class ObjectPool<T> where T : class, new()
+    public sealed class ObjectPool<T> : IObjectPool<T> where T : class, new()
     {
         /*
          * Logicaly, objects are stored as a  stack. Stack is based on an array,
@@ -86,12 +92,13 @@ namespace Libs
                 long index = head & IndexMask;
                 if (index == _maxIndex) return; //Pool is full. Just drain an object.
 
+                var pos = Split(++index);
+                EnsureRowInitialized(pos);
+
                 long newHead = GetNewHead(head, true); //Begin transaction
                 if (Interlocked.CompareExchange(ref _head, newHead, head) != head) continue;
                 head = newHead;
 
-                var pos = Split(++index);
-                EnsureRowInitialized(pos);
                 Volatile.Write(ref _data[pos.i][pos.j], entity);
 
                 newHead = GetNewHead(head + 1, false); //Commit or rollback transaction
