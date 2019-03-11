@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Libs;
 using NUnit.Framework;
@@ -244,12 +245,14 @@ namespace Tests
 
         private class TestObject
         {
+            private static int _idCounter = -1;
+
             public TestObject()
             {
-                Id = new Guid();
+                Id = Interlocked.Increment(ref _idCounter);
             }
 
-            public Guid Id { get; }
+            public int Id { get; }
         }
     }
 

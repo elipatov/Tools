@@ -2,11 +2,22 @@
 {
     public class Person
     {
-        private string _field0 { get; set; }
-        private string _field1 { get; set; }
-        private string _field2 { get; set; }
-        private string _field3 { get; set; }
-        private string _field4 { get; set; }
+        public Person()
+        {
+            _buffer = new byte[32];
+        }
+
+        public Person(Person person) : this()
+        {
+            Id = person?.Id ?? 0;
+        }
+
+        private byte[] _buffer;
+        private string _field0;
+        private string _field1;
+        private string _field2;
+        private string _field3;
+        private string _field4;
 
         public int Id { get; set; }
         public string FirstName { get; set; }

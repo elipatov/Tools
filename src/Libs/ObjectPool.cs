@@ -55,19 +55,23 @@ namespace Libs
 
         public T Rent()
         {
-            long head, newHead;
             T result;
 
-            do
+            while(true)
             {
-                head = Volatile.Read(ref _head);
+                long head = Volatile.Read(ref _head);
+
+                //It might be not obvious, but read is not allowed if write lock taken.
+                //Read removes write lock and leads to simultaneous writes.
+                if (IsWriteLock(head)) continue;
                 long index = head & IndexMask;
                 if (index == 0) return new T(); //Slot with index 0 reserved as empty marker
 
                 var pos = Split(index);
                 result = Volatile.Read(ref _data[pos.i][pos.j]);
-                newHead = GetNewHead(head - 1, false);
-            } while (Interlocked.CompareExchange(ref _head, newHead, head) != head);
+                long newHead = GetNewHead(head - 1, false);
+                if (Interlocked.CompareExchange(ref _head, newHead, head) == head) break;
+            }
 
             return result;
         }
@@ -77,14 +81,12 @@ namespace Libs
             while (true)
             {
                 long head = Volatile.Read(ref _head);
-                bool isRunningPrePublish = (head & LockMask) == LockMask;
-                if (isRunningPrePublish) continue;
+                if (IsWriteLock(head)) continue;
 
                 long index = head & IndexMask;
                 if (index == _maxIndex) return; //Pool is full. Just drain an object.
 
-                //Begin transaction
-                long newHead = GetNewHead(head, true);
+                long newHead = GetNewHead(head, true); //Begin transaction
                 if (Interlocked.CompareExchange(ref _head, newHead, head) != head) continue;
                 head = newHead;
 
@@ -92,10 +94,16 @@ namespace Libs
                 EnsureRowInitialized(pos);
                 Volatile.Write(ref _data[pos.i][pos.j], entity);
 
-                //Commit or rollback transaction
-                newHead = GetNewHead(head + 1, false);
+                newHead = GetNewHead(head + 1, false); //Commit or rollback transaction
                 if (Interlocked.CompareExchange(ref _head, newHead, head) == head) break;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsWriteLock(long head)
+        {
+            bool isRunningPrePublish = (head & LockMask) == LockMask;
+            return isRunningPrePublish;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
