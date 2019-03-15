@@ -11,13 +11,13 @@ namespace Libs
     }
 
     /// <summary>
-    ///     Lightweight hight performance object pool.
+    ///     Lightweight high performance object pool.
     /// </summary>
     /// <typeparam name="T">Type of pooled object</typeparam>
-    public sealed class ObjectPool<T> : IObjectPool<T> where T : class, new()
+    internal sealed class ObjectPool<T> : IObjectPool<T> where T : class, new()
     {
         /*
-         * Logicaly, objects are stored as a  stack. Stack is based on an array,
+         * Logically, objects are stored as a  stack. Stack is based on an array,
          * but it is splitted into jagged array because it does not require
          * to allocate all the memory. So, it makes possible to be 'unlimited'
          * and does not consume extra memory if it is not needed.
@@ -25,18 +25,18 @@ namespace Libs
          * _head consist of next parts:
          *     Index - 32-bit stack pointer.
          *     Tag   - 31-bit tag to avoid ABA problem.
-         *     L     - 1-bit flag represens exclusive write lock
+         *     L     - 1-bit flag represents exclusive write lock
          * _head binary representation:
          * Bytes |_7_|_6_|_5_|_4_|_3_|_2_|_1_|_0_|
          *       |L|     Tag     |     Index     |
          */
-        private const int  IndexBits = 32; //Can be used to move border betwean tag and index.
-        private const long IndexMask = 0xFFFF_FFFFL; //Low 32-bits
-        private const long TagMask   = 0x7FFF_FFFFL << IndexBits; //High 32-bits excluding MST bit
-        private const long UnlockMask = TagMask | IndexMask; //Excluding MST bit
+        private const int IndexBits = 32; //Can be used to move border between tag and index.
+        private const long IndexMask = ~(-1L << IndexBits); //Set low IndexBits bits to 1 (0xFFFF_FFFF)
+        private const long TagMask = (-1L << IndexBits) & ~(1L << 63); //High (64-IndexBits) bits excluding MST bit (0x7FFF_FFFF_0000_0000)
+        private const long UnlockMask = TagMask | IndexMask; //Excluding MST bit (0x7FFF_FFFF_FFF_FFF)
         private const long LockMask = ~UnlockMask; //Most significant bit
-        private const long TagIncrement = 1L << IndexBits; //Increment tag by one
-        private const long MaxIndex = ~(-1L << IndexBits); //Set low IndexBits-bits to 1
+        private const long TagIncrement = 1L << IndexBits; //Increment tag by one (0x0000_0001_0000_0000)
+        private const long MaxIndex = IndexMask;
 
         private long _head;
         private readonly ulong _basketSize;
@@ -53,7 +53,7 @@ namespace Libs
             //Fill first basket with new objects at startup.
             //It brings light performance boost due to data locality.
             //Under real load objects will be reordered. So, real impact can be negligible.
-            //Leave 1/4 of basket free. It helps to avoid pool extension if there are allocations outsite of pool.
+            //Leave 1/4 of basket free. It helps to avoid pool extension if there are allocations outside of pool.
             long preAllocateSize = (long)(_basketSize * 0.750);
             _data[0] = InitBasket(preAllocateSize);
             _head = preAllocateSize - 1;
@@ -119,7 +119,6 @@ namespace Libs
             unchecked{head += TagIncrement;}
             return @lock ? head | LockMask : head & UnlockMask;
         }
-
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void EnsureRowInitialized((long i, long j) pos)
