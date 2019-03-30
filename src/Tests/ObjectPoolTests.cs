@@ -12,11 +12,13 @@ namespace Tests
     public class ObjectPoolTests
     {
         private ObjectPool<TestObject> _objectPool;
+        private ConcurrentObjectPool<TestObject> _concurrentObjectPool;
 
         [SetUp]
         public void Setup()
         {
             _objectPool = new ObjectPool<TestObject>();
+            _concurrentObjectPool = new ConcurrentObjectPool<TestObject>();
         }
 
         [TestCase(10)]
@@ -148,6 +150,15 @@ namespace Tests
             }
         }
 
+        [TestCase(1000_000, 8)]
+        [TestCase(200_000, 50)]
+        [Ignore("Does not hang.")]
+        public void ConcurrentObjectPool_Does_Not_Hang(int count, int threadsCount)
+        {
+            var opt = new ParallelOptions { MaxDegreeOfParallelism = threadsCount };
+            Parallel.For(0, count, opt, n => RentAndReturn(_concurrentObjectPool));
+        }
+
         private void Rent(int count, HashSet<TestObject> threadStorage)
         {
             for (int i = 0; i < count; ++i)
@@ -219,28 +230,33 @@ namespace Tests
         {
             for (int i = 0; i < count; ++i)
             {
-                var p0 = _objectPool.Rent();
-                var p1 = _objectPool.Rent();
-                var p2 = _objectPool.Rent();
-                var p3 = _objectPool.Rent();
-                var p4 = _objectPool.Rent();
-                var p5 = _objectPool.Rent();
-                var p6 = _objectPool.Rent();
-                var p7 = _objectPool.Rent();
-                var p8 = _objectPool.Rent();
-                var p9 = _objectPool.Rent();
-
-                _objectPool.Return(p0);
-                _objectPool.Return(p1);
-                _objectPool.Return(p2);
-                _objectPool.Return(p3);
-                _objectPool.Return(p4);
-                _objectPool.Return(p5);
-                _objectPool.Return(p6);
-                _objectPool.Return(p7);
-                _objectPool.Return(p8);
-                _objectPool.Return(p9);
+                RentAndReturn(_objectPool);
             }
+        }
+
+        private void RentAndReturn(IObjectPool<TestObject> objectPool)
+        {
+            var p0 = objectPool.Rent();
+            var p1 = objectPool.Rent();
+            var p2 = objectPool.Rent();
+            var p3 = objectPool.Rent();
+            var p4 = objectPool.Rent();
+            var p5 = objectPool.Rent();
+            var p6 = objectPool.Rent();
+            var p7 = objectPool.Rent();
+            var p8 = objectPool.Rent();
+            var p9 = objectPool.Rent();
+
+            objectPool.Return(p0);
+            objectPool.Return(p1);
+            objectPool.Return(p2);
+            objectPool.Return(p3);
+            objectPool.Return(p4);
+            objectPool.Return(p5);
+            objectPool.Return(p6);
+            objectPool.Return(p7);
+            objectPool.Return(p8);
+            objectPool.Return(p9);
         }
 
         private class TestObject
