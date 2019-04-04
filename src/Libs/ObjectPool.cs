@@ -14,7 +14,7 @@ namespace Libs
     ///     Lightweight high performance object pool.
     /// </summary>
     /// <typeparam name="T">Type of pooled object</typeparam>
-    internal sealed class ObjectPool<T> : IObjectPool<T> where T : class, new()
+    public sealed class ObjectPool<T> : IObjectPool<T> where T : class, new()
     {
         /*
          * Logically, objects are stored as a  stack. Stack is based on an array,
@@ -43,7 +43,7 @@ namespace Libs
         private readonly long _maxIndex;
         private readonly T[][] _data;
 
-        public ObjectPool(long basketSize = 1000, long maxBasketsCount = 100_000)
+        public ObjectPool(long basketSize = 1000, long maxBasketsCount = 100_000, long preAllocateSize = 100)
         {
             _basketSize = (ulong)basketSize;
             _maxIndex = maxBasketsCount * basketSize - 1;
@@ -53,8 +53,6 @@ namespace Libs
             //Fill first basket with new objects at startup.
             //It brings light performance boost due to data locality.
             //Under real load objects will be reordered. So, real impact can be negligible.
-            //Leave 1/4 of basket free. It helps to avoid pool extension if there are allocations outside of pool.
-            long preAllocateSize = (long)(_basketSize * 0.750);
             _data[0] = InitBasket(preAllocateSize);
             _head = preAllocateSize - 1;
         }

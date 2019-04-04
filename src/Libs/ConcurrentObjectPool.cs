@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Diagnostics;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using ThreadState = System.Threading.ThreadState;
 
 namespace Libs
 {
@@ -10,29 +13,28 @@ namespace Libs
 
         //The smaller this number, the better memory locality. (slightly better performance).
         //On the other hand, small baskets leads to pool extension that is expensive.
-        private const long BasketSize = 100;
+        //Making it greathe than 85K moves pool to LOH. It can be benefitial (as far as pool lives as application).
+        private const long BasketSize = 11_000;
 
         //Limits maximum pool size. Than bigger the number, than bigger memory footprint
         //and more objects can be in use in the same time.
-        private const long MaxBasketsCount = 10_000;
+        private const long MaxBasketsCount = 10;
 
-        private readonly int _minPoolsCount = Environment.ProcessorCount;
+        //Use to preallocate part of pool. The bigger the number, the bigger initialization time memory footprint.
+        //On the other hand it gives better memory locality and avoids allocations at runtime.
+        private const long PreAllocateSize = 1_000;
+
+        private const int PoolsPerProcessor = 400;
+        private readonly int _poolsCount = PoolsPerProcessor * Environment.ProcessorCount;
         private readonly ThreadLocal<ThreadLocalPool> _locals;
-        private readonly Node _head;
-        private volatile Node _tail;
+        private readonly ThreadLocalPool[] _pools;
+        private int _index;
 
         public ConcurrentObjectPool()
         {
             _locals = new ThreadLocal<ThreadLocalPool>(true);
-            _head = new Node();
-            Node node = _head;
-
-            for (int i = 1; i < _minPoolsCount; ++i)
-            {
-                node.Next = new Node();
-                node = node.Next;
-            }
-            _tail = node;
+            _pools = new ThreadLocalPool[_poolsCount];
+            Init();
         }
 
         public T Rent()
@@ -47,6 +49,36 @@ namespace Libs
             pool.Return(entity);
         }
 
+        //There is a heap per processor. Distributes caches by processors.
+        private void Init()
+        {
+            // Ensure managed thread is linked to OS thread; does nothing on default host in current .Net versions
+            Thread.BeginThreadAffinity();
+
+#pragma warning disable 618
+            // BeginThreadAffinity call guarantees stable results for GetCurrentThreadId
+            int osThreadId = AppDomain.GetCurrentThreadId();
+#pragma warning restore 618
+
+            Process proc = Process.GetCurrentProcess();
+            ProcessThread thread = proc.Threads.Cast<ProcessThread>().Single(t => t.Id == osThreadId);
+
+            for (int p = 0; p < Environment.ProcessorCount; ++p)
+            {
+                thread.ProcessorAffinity = new IntPtr(1 << p);
+                int offset = p * PoolsPerProcessor;
+
+                for (int i = 0; i < PoolsPerProcessor; ++i)
+                {
+                    _pools[offset + i] = new ThreadLocalPool(null);
+                }
+            }
+
+            long affinityMask = ~(-1L << Environment.ProcessorCount);//Allow all processors
+            thread.ProcessorAffinity = new IntPtr(affinityMask);
+            Thread.EndThreadAffinity();
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ObjectPool<T> GetThreadLocalPool()
         {
@@ -56,14 +88,8 @@ namespace Libs
                 threadLocalPool = GetUnownedBasket();
                 if (threadLocalPool == null)
                 {
-                    var newTail = new Node(Thread.CurrentThread);
-                    threadLocalPool = newTail.ThreadLocalPool;
-                    while (Interlocked.CompareExchange(ref _tail.Next, newTail, null) != null);
-                    _tail = newTail;
-
-                    //Node tail = _tail;
-                    //while (Interlocked.CompareExchange(ref tail.Next, newTail, null) != null) ;
-                    //Interlocked.CompareExchange(ref _tail, newTail, tail);
+                    uint index = (uint)Interlocked.Increment(ref _index) % (uint)_poolsCount;
+                    threadLocalPool = _pools[index];
                 }
 
                 _locals.Value = threadLocalPool;
@@ -78,12 +104,18 @@ namespace Libs
         /// </summary>
         private ThreadLocalPool GetUnownedBasket()
         {
-            Node node = _head;
-            do
+            int lruIndex = Volatile.Read(ref _index);
+            for (int i = lruIndex; i < _poolsCount; ++i)
             {
-                if (node.ThreadLocalPool.TryTakeOwnership()) return node.ThreadLocalPool;
-                node = Volatile.Read(ref node.Next);
-            } while (node != null);
+                var pool = _pools[i];
+                if (pool.TryTakeOwnership()) return pool;
+            }
+
+            for (int i = 0; i < lruIndex; ++i)
+            {
+                ThreadLocalPool pool = _pools[i];
+                if (pool.TryTakeOwnership()) return pool;
+            }
             return null;
         }
 
@@ -91,9 +123,9 @@ namespace Libs
         {
             private Thread _ownerThread;
 
-            public ThreadLocalPool(Thread ownerThread = null)
+            public ThreadLocalPool(Thread ownerThread)
             {
-                Pool = new ObjectPool<T>(BasketSize, MaxBasketsCount);
+                Pool = new ObjectPool<T>(BasketSize, MaxBasketsCount, PreAllocateSize);
                 _ownerThread = ownerThread;
             }
 
@@ -108,17 +140,6 @@ namespace Libs
                 }
                 return false;
             }
-        }
-
-        private class Node
-        {
-            public Node(Thread ownerThread = null)
-            {
-                ThreadLocalPool = new ThreadLocalPool(ownerThread);
-            }
-
-            public readonly ThreadLocalPool ThreadLocalPool;
-            public Node Next;
         }
     }
 }
