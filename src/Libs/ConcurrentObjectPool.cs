@@ -24,7 +24,7 @@ namespace Libs
         //On the other hand it gives better memory locality and avoids allocations at runtime.
         private const long PreAllocateSize = 1_000;
 
-        private const int PoolsPerProcessor = 400;
+        private const int PoolsPerProcessor = 4;
         private readonly int _poolsCount = PoolsPerProcessor * Environment.ProcessorCount;
         private readonly ThreadLocal<ThreadLocalPool> _locals;
         private readonly ThreadLocalPool[] _pools;
