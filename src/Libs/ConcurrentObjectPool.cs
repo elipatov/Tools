@@ -1,4 +1,9 @@
-﻿using System.Threading;
+﻿using System;
+using System.Diagnostics;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using ThreadState = System.Threading.ThreadState;
 
 namespace Libs
 {
@@ -6,48 +11,135 @@ namespace Libs
     {
         //These numbers can be adjusted according to load profile.
 
-        //Should be power of 2; Than bigger this number than lower contention rate
-        //and higher performance in multi-thread load.
-        private const uint PoolsCount = 16;
-
         //The smaller this number, the better memory locality. (slightly better performance).
         //On the other hand, small baskets leads to pool extension that is expensive.
-        private const long BasketSize = 100;
+        //Making it greathe than 85K moves pool to LOH. It can be benefitial (as far as pool lives as application).
+        private const long BasketSize = 11_000;
 
         //Limits maximum pool size. Than bigger the number, than bigger memory footprint
         //and more objects can be in use in the same time.
-        private const long MaxBasketsCount = 10_000;
+        private const long MaxBasketsCount = 10;
 
-        private readonly ObjectPool<T>[] _pools;
-        private int _rentCounter;
-        private int _returnCounter = (int)(PoolsCount / 2); //Phase shift π. give slight performance boost.
+        //Use to preallocate part of pool. The bigger the number, the bigger initialization time memory footprint.
+        //On the other hand it gives better memory locality and avoids allocations at runtime.
+        private const long PreAllocateSize = 1_000;
+
+        private const int PoolsPerProcessor = 4;
+        private readonly int _poolsCount = PoolsPerProcessor * Environment.ProcessorCount;
+        private readonly ThreadLocal<ThreadLocalPool> _locals;
+        private readonly ThreadLocalPool[] _pools;
+        private int _index;
 
         public ConcurrentObjectPool()
         {
-            _pools = new ObjectPool<T>[PoolsCount];
-            for (int i = 0; i < PoolsCount; ++i)
-            {
-                _pools[i] = new ObjectPool<T>(BasketSize, MaxBasketsCount);
-            }
+            _locals = new ThreadLocal<ThreadLocalPool>(true);
+            _pools = new ThreadLocalPool[_poolsCount];
+            Init();
         }
 
         public T Rent()
         {
-            unchecked
-            {
-                uint poolIndex = (uint)Interlocked.Increment(ref _rentCounter) % PoolsCount;
-                return _pools[poolIndex].Rent();
-            }
+            ObjectPool<T> pool = GetThreadLocalPool();
+            return pool.Rent();
         }
 
         public void Return(T entity)
         {
-            unchecked
+            ObjectPool<T> pool = GetThreadLocalPool();
+            pool.Return(entity);
+        }
+
+        //There is a heap per processor. Distributes caches by processors.
+        private void Init()
+        {
+            // Ensure managed thread is linked to OS thread; does nothing on default host in current .Net versions
+            Thread.BeginThreadAffinity();
+
+#pragma warning disable 618
+            // BeginThreadAffinity call guarantees stable results for GetCurrentThreadId
+            int osThreadId = AppDomain.GetCurrentThreadId();
+#pragma warning restore 618
+
+            Process proc = Process.GetCurrentProcess();
+            ProcessThread thread = proc.Threads.Cast<ProcessThread>().Single(t => t.Id == osThreadId);
+
+            for (int p = 0; p < Environment.ProcessorCount; ++p)
             {
-                uint poolIndex = (uint)Interlocked.Increment(ref _returnCounter) % PoolsCount;
-                _pools[poolIndex].Return(entity);
+                thread.ProcessorAffinity = new IntPtr(1 << p);
+                int offset = p * PoolsPerProcessor;
+
+                for (int i = 0; i < PoolsPerProcessor; ++i)
+                {
+                    _pools[offset + i] = new ThreadLocalPool(null);
+                }
             }
 
+            long affinityMask = ~(-1L << Environment.ProcessorCount);//Allow all processors
+            thread.ProcessorAffinity = new IntPtr(affinityMask);
+            Thread.EndThreadAffinity();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private ObjectPool<T> GetThreadLocalPool()
+        {
+            ThreadLocalPool threadLocalPool = _locals.Value;
+            if (threadLocalPool == null)
+            {
+                threadLocalPool = GetUnownedBasket();
+                if (threadLocalPool == null)
+                {
+                    uint index = (uint)Interlocked.Increment(ref _index) % (uint)_poolsCount;
+                    threadLocalPool = _pools[index];
+                }
+
+                _locals.Value = threadLocalPool;
+            }
+            return threadLocalPool.Pool;
+        }
+
+        /// <summary>
+        /// Try to reuse an unowned pool if exist.
+        /// Unowned pools are the pools that their owner threads are aborted or terminated.
+        /// This is workaround to avoid memory leaks.
+        /// </summary>
+        private ThreadLocalPool GetUnownedBasket()
+        {
+            int lruIndex = Volatile.Read(ref _index);
+            for (int i = lruIndex; i < _poolsCount; ++i)
+            {
+                var pool = _pools[i];
+                if (pool.TryTakeOwnership()) return pool;
+            }
+
+            for (int i = 0; i < lruIndex; ++i)
+            {
+                ThreadLocalPool pool = _pools[i];
+                if (pool.TryTakeOwnership()) return pool;
+            }
+            return null;
+        }
+
+        private class ThreadLocalPool
+        {
+            private Thread _ownerThread;
+
+            public ThreadLocalPool(Thread ownerThread)
+            {
+                Pool = new ObjectPool<T>(BasketSize, MaxBasketsCount, PreAllocateSize);
+                _ownerThread = ownerThread;
+            }
+
+            public readonly ObjectPool<T> Pool;
+
+            public bool TryTakeOwnership()
+            {
+                Thread owner = Volatile.Read(ref _ownerThread);
+                if (owner == null || owner.ThreadState == ThreadState.Stopped)
+                {
+                    return Interlocked.CompareExchange(ref _ownerThread, Thread.CurrentThread, owner) == owner;
+                }
+                return false;
+            }
         }
     }
 }
