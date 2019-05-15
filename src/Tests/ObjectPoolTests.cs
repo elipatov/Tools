@@ -159,6 +159,26 @@ namespace Tests
             Parallel.For(0, count, opt, n => RentAndReturn(_concurrentObjectPool));
         }
 
+        [TestCase(1024)]
+        public async Task ConcurrentObjectPool_Does_Not_Fail_With_Multiple_New_Threads(int threadsCount)
+        {
+            //Emulate ThreadPool expand and shrink
+            var tasks = new Task[threadsCount];
+
+            for (int i = 0; i < threadsCount; ++i)
+            {
+                tasks[i] = Task.Factory.StartNew(() =>
+                    {
+                        var obj = _concurrentObjectPool.Rent();
+                        _concurrentObjectPool.Return(obj);
+                        Thread.Sleep(25);//Emulate medium-time living threads
+                    },
+                    TaskCreationOptions.LongRunning);
+            }
+
+            await Task.WhenAll(tasks);
+        }
+
         private void Rent(int count, HashSet<TestObject> threadStorage)
         {
             for (int i = 0; i < count; ++i)

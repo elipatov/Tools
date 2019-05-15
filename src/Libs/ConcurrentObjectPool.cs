@@ -104,14 +104,14 @@ namespace Libs
         /// </summary>
         private ThreadLocalPool GetUnownedBasket()
         {
-            int lruIndex = Volatile.Read(ref _index);
-            for (int i = lruIndex; i < _poolsCount; ++i)
+            uint lruIndex = (uint)Volatile.Read(ref _index) % (uint)_poolsCount;
+            for (uint i = lruIndex; i < _poolsCount; ++i)
             {
-                var pool = _pools[i];
+                ThreadLocalPool pool = _pools[i];
                 if (pool.TryTakeOwnership()) return pool;
             }
 
-            for (int i = 0; i < lruIndex; ++i)
+            for (uint i = 0; i < lruIndex; ++i)
             {
                 ThreadLocalPool pool = _pools[i];
                 if (pool.TryTakeOwnership()) return pool;
