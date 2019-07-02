@@ -18,10 +18,7 @@ namespace Libs.ProducerConsumerStream
             }
 
             public override bool CanRead => true;
-            
-            //Actually Seek is not supported and CanSeek should be false. 
-            //It is a hack to make it work with Amazon S3 SDK. Downside is that retry policy does not work if failure occures.
-            public override bool CanSeek => true;
+            public override bool CanSeek => false;
             public override bool CanWrite => false;
             public override long Length => _producerConsumerStream.WriterPosition;
 
